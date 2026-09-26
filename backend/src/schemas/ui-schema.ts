@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 export const generatedUIFieldSchema = z.object({
   name: z.string().min(1),
-  type: z.enum(['text_input', 'number_input', 'select_input', 'date_input', 'checkbox', 'button']),
+  type: z.enum(['text', 'number', 'email', 'select', 'date', 'textarea']),
   label: z.string().min(1),
   placeholder: z.string().optional(),
   required: z.boolean().optional(),
@@ -18,8 +18,8 @@ export const generatedUIStepSchema = z.object({
 export const generatedUIPayloadSchema = z.object({
   id: z.string().min(1),
   version: z.string().min(1),
-  type: z.enum(['step_wizard', 'financial_summary']),
-  component: z.enum(['step_wizard', 'financial_summary']),
+  type: z.enum(['step_wizard', 'simplified_form', 'adaptive_form']),
+  component: z.enum(['TextInput', 'SelectInput', 'NumberInput', 'DateInput', 'StepWizard', 'FinancialSummary']),
   props: z.object({
     title: z.string().optional(),
     description: z.string().optional(),
@@ -37,6 +37,7 @@ export const telemetryInputSchema = z.object({
   repeatedClicks: z.number().min(0),
   fieldErrors: z.number().min(0),
   activeField: z.string().nullable().optional(),
+  formState: z.record(z.unknown()).optional(),
 })
 
 export const frictionMessageSchema = z.object({

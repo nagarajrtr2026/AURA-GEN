@@ -30,11 +30,12 @@ export interface LLMRequestPayload {
   }
   frictionLevel: FrictionLevel
   context: string
+  formState: Record<string, unknown>
 }
 
 export interface GeneratedUIField {
   name: string
-  type: 'text_input' | 'number_input' | 'select_input' | 'date_input' | 'checkbox' | 'button'
+  type: 'text' | 'number' | 'email' | 'select' | 'date' | 'textarea'
   label: string
   placeholder?: string
   required?: boolean
@@ -50,8 +51,8 @@ export interface GeneratedUIStep {
 export interface GeneratedUIPayload {
   id: string
   version: string
-  type: 'step_wizard' | 'financial_summary'
-  component: 'step_wizard' | 'financial_summary' | 'text_input' | 'number_input' | 'select_input' | 'date_input' | 'checkbox' | 'button'
+  type: 'step_wizard' | 'simplified_form' | 'adaptive_form'
+  component: 'TextInput' | 'SelectInput' | 'NumberInput' | 'DateInput' | 'StepWizard' | 'FinancialSummary'
   props: {
     title?: string
     description?: string

@@ -3,7 +3,7 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { Activity, ArrowRight, BadgeCheck, BarChart3, Bot, Check, Code2, FileText, Gauge, LockKeyhole, RotateCcw, Send, ShieldCheck, Sparkles, Timer, X } from 'lucide-react'
 import Link from 'next/link'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { DynamicRenderer } from '@/components/adaptive-ui/DynamicRenderer'
 import { FinancialForm, WizardStep } from '@/components/financial-form/FinancialForm'
 import { Header } from '@/components/layout/Header'
@@ -12,8 +12,7 @@ import { TelemetryMonitor } from '@/components/telemetry/TelemetryMonitor'
 import { useCognitiveLoad } from '@/hooks/useCognitiveLoad'
 import { useTelemetry } from '@/hooks/useTelemetry'
 import { useWebSocket } from '@/hooks/useWebSocket'
-import { createDemoGeneratedUI } from '@/lib/websocket'
-import type { GeneratedUIPayload } from '@/types/generated-ui'
+import { validateGeneratedUIPayload, type GeneratedUIPayload } from '@/types/generated-ui'
 import type { FinancialFormState } from '@/types/financial-form'
 
 const blank: FinancialFormState = {
@@ -86,70 +85,92 @@ function FinancialExperience() {
   const [phase, setPhase] = useState<AdaptivePhase>('MONITORING')
   const [mode, setMode] = useState<'original' | 'adaptive' | 'fallback'>('original')
   const [generatedUI, setGeneratedUI] = useState<GeneratedUIPayload | null>(null)
-  const [generationStatus, setGenerationStatus] = useState<'idle' | 'started' | 'complete' | 'error'>('idle')
+  const [generationStatus, setGenerationStatus] = useState<'IDLE' | 'GENERATING' | 'COMPLETE' | 'ERROR'>('IDLE')
   const [monitorExpanded, setMonitorExpanded] = useState(true)
-  const [demoMode, setDemoMode] = useState(true)
   const [fallbackMessage, setFallbackMessage] = useState('Unable to adapt the interface right now. Your current form data is safe.')
   const [lastError, setLastError] = useState<string | null>(null)
+  const generationAttemptedForHigh = useRef(false)
 
   useEffect(() => {
-    if (!demoMode || phase === 'ADAPTIVE_UI_ACTIVE' || phase === 'FALLBACK' || phase === 'ERROR') {
+    if (cognitive.level !== 'HIGH') {
+      generationAttemptedForHigh.current = false
       return
     }
+    if (generationAttemptedForHigh.current || (phase !== 'MONITORING' && phase !== 'FRICTION_DETECTED')) return
 
-    if (cognitive.level === 'HIGH' && phase === 'MONITORING') {
-      setPhase('FRICTION_DETECTED')
-      setMode('adaptive')
-      socket.emitMock('cognitive_load_update')
-
-      const detectTimer = window.setTimeout(() => {
-        setPhase('HIGH_COGNITIVE_LOAD')
-        socket.emitMock('ui_generation_started')
-        setGenerationStatus('started')
-      }, 700)
-
-      return () => window.clearTimeout(detectTimer)
-    }
-  }, [cognitive.level, demoMode, phase, socket])
-
-  useEffect(() => {
-    if (phase !== 'HIGH_COGNITIVE_LOAD' && phase !== 'GENERATION_STARTED') {
-      return
-    }
-
-    const generationTimer = window.setTimeout(() => {
-      const payload = createDemoGeneratedUI()
-      setGeneratedUI(payload)
-      setGenerationStatus('complete')
-      setPhase('GENERATION_COMPLETE')
-      socket.emitMock('ui_generation_complete')
-
-      window.setTimeout(() => {
-        setPhase('MORPHING')
-        socket.emitMock('ui_morph_start')
-        window.setTimeout(() => {
-          setPhase('ADAPTIVE_UI_ACTIVE')
-          setMode('adaptive')
-          socket.emitMock('ui_morph_complete')
-        }, 600)
-      }, 400)
-    }, 900)
-
-    return () => window.clearTimeout(generationTimer)
-  }, [phase, socket])
-
-  const handleAdaptiveStart = () => {
+    generationAttemptedForHigh.current = true
     setMode('adaptive')
     setPhase('GENERATION_STARTED')
-    setGenerationStatus('started')
-    socket.emitMock('ui_generation_started')
+    setGenerationStatus('GENERATING')
+    void socket.sendTelemetry(telemetryApi.telemetry, form as unknown as Record<string, unknown>)
+      .then((payload) => {
+        if (payload) {
+          const result = validateGeneratedUIPayload(payload)
+          if (!result.valid || !result.payload) throw new Error(result.error ?? 'The generated UI payload is invalid.')
+          setGeneratedUI(result.payload)
+          setGenerationStatus('COMPLETE')
+          setPhase('GENERATION_COMPLETE')
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : 'Backend generation request failed.'
+        setLastError(message)
+        setFallbackMessage(message)
+        setGenerationStatus('ERROR')
+        setPhase('FALLBACK')
+      })
+  }, [cognitive.level, form, phase, socket.connected, socket.sendTelemetry, telemetryApi.telemetry])
+
+  useEffect(() => {
+    const event = socket.lastEvent
+    if (!event) return
+
+    if (event.type === 'ui_generation_started') {
+      setGenerationStatus('GENERATING')
+      setPhase('GENERATION_STARTED')
+    } else if (event.type === 'ui_generation_complete') {
+      const result = validateGeneratedUIPayload(event.data?.payload)
+      if (!result.valid || !result.payload) {
+        setLastError(result.error ?? 'The generated UI payload is invalid.')
+        setGenerationStatus('ERROR')
+        setPhase('FALLBACK')
+        return
+      }
+      setGeneratedUI(result.payload)
+      setGenerationStatus('COMPLETE')
+      setPhase('GENERATION_COMPLETE')
+    } else if (event.type === 'ui_generation_error') {
+      const message = String(event.data?.message ?? 'Backend generation failed.')
+      setLastError(message)
+      setFallbackMessage(message)
+      setGenerationStatus('ERROR')
+      setPhase('FALLBACK')
+    }
+  }, [socket.lastEvent])
+
+  useEffect(() => {
+    if (phase !== 'GENERATION_COMPLETE') return
+    const morphTimer = window.setTimeout(() => setPhase('MORPHING'), 400)
+    return () => window.clearTimeout(morphTimer)
+  }, [phase])
+
+  useEffect(() => {
+    if (phase !== 'MORPHING') return
+    const completeTimer = window.setTimeout(() => setPhase('ADAPTIVE_UI_ACTIVE'), 600)
+    return () => window.clearTimeout(completeTimer)
+  }, [phase])
+
+  const handleAdaptiveStart = () => {
+    generationAttemptedForHigh.current = false
+    telemetryApi.simulateFrustration()
+    setPhase('FRICTION_DETECTED')
   }
 
   const handleFallback = () => {
     const message = 'Unable to adapt the interface right now. Your current form data is safe.'
     setFallbackMessage(message)
     setLastError(message)
-    setGenerationStatus('error')
+    setGenerationStatus('ERROR')
     setPhase('FALLBACK')
     setMode('fallback')
     socket.emitMock('ui_fallback')
@@ -158,7 +179,7 @@ function FinancialExperience() {
   const handleContinueOriginal = () => {
     setPhase('MONITORING')
     setMode('original')
-    setGenerationStatus('idle')
+    setGenerationStatus('IDLE')
     setGeneratedUI(null)
     setLastError(null)
     setFallbackMessage('Unable to adapt the interface right now. Your current form data is safe.')
@@ -166,45 +187,25 @@ function FinancialExperience() {
   }
 
   const handleTryAgain = () => {
-    setPhase('GENERATION_STARTED')
-    setGenerationStatus('started')
-    setMode('adaptive')
+    generationAttemptedForHigh.current = false
+    setPhase('FRICTION_DETECTED')
+    setGenerationStatus('IDLE')
     setFallbackMessage('Unable to adapt the interface right now. Your current form data is safe.')
-    socket.emitMock('ui_generation_started')
-
-    const retryTimer = window.setTimeout(() => {
-      const payload = createDemoGeneratedUI()
-      setGeneratedUI(payload)
-      setGenerationStatus('complete')
-      setPhase('GENERATION_COMPLETE')
-      socket.emitMock('ui_generation_complete')
-      window.setTimeout(() => {
-        setPhase('MORPHING')
-        socket.emitMock('ui_morph_start')
-        window.setTimeout(() => {
-          setPhase('ADAPTIVE_UI_ACTIVE')
-          setMode('adaptive')
-          socket.emitMock('ui_morph_complete')
-        }, 600)
-      }, 400)
-    }, 900)
-
-    return () => window.clearTimeout(retryTimer)
   }
 
   const handleSimulate = () => {
+    generationAttemptedForHigh.current = false
     telemetryApi.simulateFrustration()
     setPhase('FRICTION_DETECTED')
-    setMode('adaptive')
-    socket.emitMock('cognitive_load_update')
   }
 
   const resetDemo = () => {
+    generationAttemptedForHigh.current = false
     setForm(blank)
     setPhase('MONITORING')
     setMode('original')
     setGeneratedUI(null)
-    setGenerationStatus('idle')
+    setGenerationStatus('IDLE')
     setFallbackMessage('Unable to adapt the interface right now. Your current form data is safe.')
     setLastError(null)
     socket.reset()
@@ -228,10 +229,6 @@ function FinancialExperience() {
           </div>
 
           <div className="flex items-center gap-3">
-            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-[#dce9e5] bg-white px-3 py-2 text-xs font-semibold text-[#658078]">
-              <input type="checkbox" checked={demoMode} onChange={(event) => setDemoMode(event.target.checked)} className="accent-[#438674]" />
-              Demo mode
-            </label>
             <button type="button" onClick={resetDemo} className="inline-flex items-center gap-2 rounded-lg border border-[#d8e8e2] bg-white px-3 py-2 text-xs font-semibold text-[#50776d]">
               <RotateCcw className="size-3.5" />
               Reset demo

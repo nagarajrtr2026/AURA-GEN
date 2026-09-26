@@ -2,13 +2,14 @@ import { z } from 'zod'
 import { CODE_GENERATION_PROMPT } from '../prompts/code-generation-prompt.js'
 import { generatedUIPayloadSchema } from '../schemas/ui-schema.js'
 import { LangChainProviderAdapter } from '../services/langchain-provider.js'
+import { validateGeneratedReactCode } from '../services/react-code-validator.js'
 import type { GeneratedUIPayload, LLMRequestPayload } from '../types/telemetry.js'
 
 const mockGeneratedUI: GeneratedUIPayload = {
   id: 'mock-ui-001',
   version: '1.0.0',
   type: 'step_wizard',
-  component: 'step_wizard',
+  component: 'StepWizard',
   props: {
     title: 'A simpler way forward',
     description: 'We reduced the form into a shorter guided flow.',
@@ -16,7 +17,7 @@ const mockGeneratedUI: GeneratedUIPayload = {
       {
         id: 'name',
         title: 'Your name',
-        fields: [{ name: 'fullName', type: 'text_input', label: 'Full name', placeholder: 'Nagaraj M', required: true }],
+        fields: [{ name: 'fullName', type: 'text', label: 'Full name', placeholder: 'Full name', required: true }],
       },
       {
         id: 'income',
@@ -24,20 +25,20 @@ const mockGeneratedUI: GeneratedUIPayload = {
         fields: [
           {
             name: 'employmentType',
-            type: 'select_input',
+            type: 'select',
             label: 'Employment type',
             options: [
               { value: 'salaried', label: 'Salaried' },
               { value: 'self_employed', label: 'Self-employed' },
             ],
           },
-          { name: 'annualIncome', type: 'number_input', label: 'Annual income', placeholder: '₹ 500000' },
+          { name: 'annualIncome', type: 'number', label: 'Annual income', placeholder: '500000' },
         ],
       },
       {
         id: 'summary',
         title: 'Review',
-        fields: [{ name: 'submit', type: 'button', label: 'Continue securely' }],
+        fields: [{ name: 'confirmation', type: 'text', label: 'Review your application' }],
       },
     ],
   },
@@ -46,38 +47,35 @@ const mockGeneratedUI: GeneratedUIPayload = {
   timestamp: Date.now(),
 }
 
+const mockGeneratedReactCode = `export default function AdaptiveGeneratedUI() {
+  return <section><h2>A simpler way forward</h2><p>Continue with your application.</p></section>
+}`
+
 const llmResponseSchema = z.object({
-  id: z.string().min(1),
-  version: z.string().min(1),
-  type: z.enum(['step_wizard', 'financial_summary']),
-  component: z.enum(['step_wizard', 'financial_summary']),
-  props: z.object({
-    title: z.string().optional(),
-    description: z.string().optional(),
-    fields: z.array(z.any()).optional(),
-    steps: z.array(z.any()).optional(),
-  }),
-  fields: z.array(z.string()),
-  state: z.record(z.unknown()),
-  timestamp: z.number(),
+  reactCode: z.string().min(1),
+  payload: generatedUIPayloadSchema,
 })
 
 export class CodeGenerationAgent {
   private readonly mockLlm: boolean
-  private readonly provider: LangChainProviderAdapter
+  private readonly provider: Pick<LangChainProviderAdapter, 'generate'>
 
-  constructor(mockLlm: boolean) {
+  constructor(mockLlm: boolean, provider: Pick<LangChainProviderAdapter, 'generate'> = new LangChainProviderAdapter()) {
     this.mockLlm = mockLlm
-    this.provider = new LangChainProviderAdapter()
+    this.provider = provider
   }
 
   async generate(payload: LLMRequestPayload): Promise<GeneratedUIPayload> {
     if (this.mockLlm) {
-      return mockGeneratedUI
-    }
-
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error('OPENAI_API_KEY is required when MOCK_LLM=false.')
+      const validation = validateGeneratedReactCode(mockGeneratedReactCode)
+      if (!validation.approved) {
+        throw new Error(`Generated React code was rejected: ${validation.error}`)
+      }
+      return generatedUIPayloadSchema.parse({
+        ...mockGeneratedUI,
+        state: payload.formState,
+        timestamp: Date.now(),
+      })
     }
 
     const prompt = CODE_GENERATION_PROMPT.replace('{{TELEMETRY}}', JSON.stringify(payload, null, 2))
@@ -90,7 +88,16 @@ export class CodeGenerationAgent {
         throw new Error(`LLM output failed validation: ${safe.error.message}`)
       }
 
-      return generatedUIPayloadSchema.parse({ ...safe.data, timestamp: Date.now() })
+      const validation = validateGeneratedReactCode(safe.data.reactCode)
+      if (!validation.approved) {
+        throw new Error(`Generated React code was rejected: ${validation.error}`)
+      }
+
+      return generatedUIPayloadSchema.parse({
+        ...safe.data.payload,
+        state: payload.formState,
+        timestamp: Date.now(),
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown LLM error.'
       throw new Error(`Code generation failed: ${message}`)

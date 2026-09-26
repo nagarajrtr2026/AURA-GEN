@@ -15,11 +15,12 @@ export class AuraWebSocketServer {
 
       socket.on('message', (raw) => {
         try {
-          const event = JSON.parse(raw.toString()) as Partial<TelemetryEvent>
-          const payload: WebSocketPayload = {
+          const event = JSON.parse(raw.toString()) as Partial<TelemetryEvent> & { requestId?: string }
+          const payload: WebSocketPayload & { requestId?: string } = {
             type: event.type ?? 'telemetry_update',
             timestamp: Date.now(),
             data: event.data as Record<string, unknown>,
+            ...(typeof event.requestId === 'string' ? { requestId: event.requestId } : {}),
           }
 
           this.server.clients.forEach((client) => {
@@ -35,10 +36,11 @@ export class AuraWebSocketServer {
   }
 
   broadcast(type: string, data: Record<string, unknown>) {
-    const payload: WebSocketPayload = {
+    const payload: WebSocketPayload & { requestId?: string } = {
       type,
       timestamp: Date.now(),
       data,
+      ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
     }
 
     this.server.clients.forEach((client) => {

@@ -6,9 +6,16 @@ import { telemetryInputSchema } from './schemas/ui-schema.js';
 import { AuraWebSocketServer } from './websocket/server.js';
 const app = express();
 app.use(express.json());
+app.use((_req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    next();
+});
+app.options('*', (_req, res) => res.sendStatus(204));
 const frictionEngine = new FrictionEngine();
 const codeGenerationAgent = new CodeGenerationAgent(config.mockLlm);
-const wsServer = new AuraWebSocketServer(config.port + 1);
+const wsServer = new AuraWebSocketServer(config.wsPort);
 wsServer.start();
 app.get('/health', (_req, res) => {
     res.json({ status: 'ok', mockLlm: config.mockLlm, port: config.port });
@@ -28,6 +35,7 @@ app.post('/api/telemetry', async (req, res) => {
                 repeatedClicks: parsed.data.repeatedClicks,
                 fieldErrors: parsed.data.fieldErrors,
                 activeField: parsed.data.activeField ?? null,
+                formState: parsed.data.formState ?? {},
             },
         };
         const decision = frictionEngine.evaluateTelemetry(event);
@@ -39,6 +47,7 @@ app.post('/api/telemetry', async (req, res) => {
         });
         if (decision.level === 'HIGH') {
             try {
+                wsServer.broadcast('ui_generation_started', { status: 'started' });
                 const payload = await codeGenerationAgent.generate({
                     telemetry: {
                         cursorVelocity: event.data.cursorVelocity,
@@ -49,8 +58,8 @@ app.post('/api/telemetry', async (req, res) => {
                     },
                     frictionLevel: decision.level,
                     context: `High friction detected at field: ${decision.activeField ?? 'unknown'}`,
+                    formState: parsed.data.formState ?? {},
                 });
-                wsServer.broadcast('ui_generation_started', { status: 'started' });
                 wsServer.broadcast('ui_generation_complete', { payload });
                 return res.status(200).json({ success: true, decision, payload });
             }

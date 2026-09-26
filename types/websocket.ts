@@ -1,4 +1,6 @@
 export type WebSocketEventType =
+  | 'connection_established'
+  | 'validation_error'
   | 'telemetry_update'
   | 'cognitive_load_update'
   | 'ui_generation_started'
@@ -13,6 +15,7 @@ export interface WebSocketEvent {
   type: WebSocketEventType
   timestamp: number
   data?: Record<string, unknown>
+  requestId?: string
 }
 
 export interface CognitiveLoadUpdateEvent extends WebSocketEvent {
@@ -26,16 +29,7 @@ export interface CognitiveLoadUpdateEvent extends WebSocketEvent {
 export interface UIGenerationCompleteEvent extends WebSocketEvent {
   type: 'ui_generation_complete'
   data: {
-    ui: {
-      id: string
-      version: string
-      type: string
-      component: string
-      props: Record<string, unknown>
-      fields: string[]
-      state: Record<string, unknown>
-      timestamp: number
-    }
+    payload: import('@/types/generated-ui').GeneratedUIPayload
   }
 }
 

@@ -1,7 +1,7 @@
 import type { GeneratedUIPayload } from '@/types/generated-ui'
 import type { WebSocketEvent, WebSocketEventType } from '@/types/websocket'
 
-export const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080'
+export const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:4001'
 
 export class AuraWebSocket {
   private socket: WebSocket | null = null

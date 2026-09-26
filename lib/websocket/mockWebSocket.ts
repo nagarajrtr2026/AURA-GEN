@@ -3,6 +3,8 @@ import type { WebSocketEvent, WebSocketEventType } from '@/types/websocket'
 
 export function createMockWebSocketEvent(type: WebSocketEventType): WebSocketEvent {
   const payloadMap: Record<WebSocketEventType, Record<string, unknown>> = {
+    connection_established: { status: 'connected' },
+    validation_error: { message: 'The backend sent an invalid event.' },
     telemetry_update: { score: 42, activeField: 'annualIncome' },
     cognitive_load_update: { score: 71, level: 'HIGH' },
     ui_generation_started: { status: 'started', payloadType: 'step_wizard' },
