@@ -38,6 +38,12 @@ export const telemetryInputSchema = z.object({
   fieldErrors: z.number().min(0),
   activeField: z.string().nullable().optional(),
   formState: z.record(z.unknown()).optional(),
+  interactionContext: z.object({
+    clickCount: z.number().min(0).optional(),
+    fieldInteractions: z.record(z.number().min(0)).optional(),
+    currentSection: z.enum(['personal', 'employment', 'financial', 'tax', 'review']).optional(),
+    isSubmitted: z.boolean().optional(),
+  }).optional(),
 })
 
 export const frictionMessageSchema = z.object({

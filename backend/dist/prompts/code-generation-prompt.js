@@ -10,7 +10,7 @@ Rules:
 - Do NOT generate arbitrary JavaScript or code execution logic.
 - Allowed payload components: TextInput, SelectInput, NumberInput, DateInput, StepWizard, FinancialSummary.
 - Keep the generated interface simple, task-focused, and safe.
-- Preserve the user's progress and use the active field as guidance.
+- Preserve every value in formState exactly and use the active field and interaction context as guidance.
 - The payload object uses keys: id, version, type, component, props, fields, state, timestamp.
 - Use step_wizard for multi-step guidance and adaptive_form for a focused form.
 - Use only static values and safe UI metadata in the payload.

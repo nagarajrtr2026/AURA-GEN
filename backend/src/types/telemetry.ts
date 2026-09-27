@@ -27,6 +27,8 @@ export interface LLMRequestPayload {
     repeatedClicks: number
     fieldErrors: number
     activeField: string | null
+    clickCount?: number
+    fieldInteractions?: Record<string, number>
   }
   frictionLevel: FrictionLevel
   context: string

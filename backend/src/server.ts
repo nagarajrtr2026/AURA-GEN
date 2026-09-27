@@ -64,9 +64,15 @@ app.post('/api/telemetry', async (req, res) => {
             repeatedClicks: event.data.repeatedClicks,
             fieldErrors: event.data.fieldErrors,
             activeField: event.data.activeField ?? null,
+            clickCount: parsed.data.interactionContext?.clickCount ?? 0,
+            fieldInteractions: parsed.data.interactionContext?.fieldInteractions ?? {},
           },
           frictionLevel: decision.level,
-          context: `High friction detected at field: ${decision.activeField ?? 'unknown'}`,
+          context: JSON.stringify({
+            friction: { score: decision.score, level: decision.level, reason: decision.reason },
+            activeField: decision.activeField,
+            interaction: parsed.data.interactionContext ?? {},
+          }),
           formState: parsed.data.formState ?? {},
         })
 

@@ -98,7 +98,16 @@ export function useWebSocket() {
     return event
   }, [send])
 
-  const sendTelemetry = useCallback(async (telemetry: TelemetryData, formState: Record<string, unknown>) => {
+  const sendTelemetry = useCallback(async (
+    telemetry: TelemetryData,
+    formState: Record<string, unknown>,
+    interactionContext: {
+      clickCount: number
+      fieldInteractions: Record<string, number>
+      currentSection: string
+      isSubmitted: boolean
+    },
+  ) => {
     const response = await fetch(`${apiUrl}/api/telemetry`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -109,6 +118,7 @@ export function useWebSocket() {
         fieldErrors: telemetry.fieldErrorCount,
         activeField: telemetry.activeField,
         formState,
+        interactionContext,
       }),
     })
 
