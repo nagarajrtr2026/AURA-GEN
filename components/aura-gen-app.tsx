@@ -90,6 +90,7 @@ function FinancialExperience() {
   const [fallbackMessage, setFallbackMessage] = useState('Unable to adapt the interface right now. Your current form data is safe.')
   const [lastError, setLastError] = useState<string | null>(null)
   const generationAttemptedForHigh = useRef(false)
+  const lastActiveField = useRef<string | null>(null)
 
   useEffect(() => {
     if (cognitive.level !== 'HIGH') {
@@ -102,7 +103,16 @@ function FinancialExperience() {
     setMode('adaptive')
     setPhase('GENERATION_STARTED')
     setGenerationStatus('GENERATING')
-    void socket.sendTelemetry(telemetryApi.telemetry, form as unknown as Record<string, unknown>)
+    const telemetryContext = {
+      ...telemetryApi.telemetry,
+      activeField: telemetryApi.telemetry.activeField ?? lastActiveField.current,
+    }
+    void socket.sendTelemetry(telemetryContext, form as unknown as Record<string, unknown>, {
+      clickCount: telemetryApi.telemetry.clickCount,
+      fieldInteractions: telemetryApi.telemetry.fieldInteractions,
+      currentSection: form.currentSection,
+      isSubmitted: form.isSubmitted,
+    })
       .then((payload) => {
         if (payload) {
           const result = validateGeneratedUIPayload(payload)
@@ -201,6 +211,7 @@ function FinancialExperience() {
 
   const resetDemo = () => {
     generationAttemptedForHigh.current = false
+    lastActiveField.current = null
     setForm(blank)
     setPhase('MONITORING')
     setMode('original')
@@ -277,14 +288,17 @@ function FinancialExperience() {
                   </div>
                 </div>
                 <DynamicRenderer payload={generatedUI} fallbackMessage={fallbackMessage} />
-                {phase === 'ADAPTIVE_UI_ACTIVE' && <WizardStep form={form} setForm={setForm} onBack={() => setPhase('MONITORING')} />}
+                {phase === 'ADAPTIVE_UI_ACTIVE' && <WizardStep form={form} setForm={setForm} activeField={lastActiveField.current} onBack={() => setPhase('MONITORING')} />}
               </motion.div>
             ) : (
               <FinancialForm
                 form={form}
                 setForm={setForm}
                 onAdaptive={handleAdaptiveStart}
-                onFocusField={(field) => telemetryApi.focusField(field)}
+                onFocusField={(field) => {
+                  lastActiveField.current = field
+                  telemetryApi.focusField(field)
+                }}
                 onBlurField={(field, hasError = false) => telemetryApi.blurField(field, hasError)}
               />
             )}

@@ -46,8 +46,9 @@ app.post('/api/telemetry', async (req, res) => {
             reason: decision.reason,
         });
         if (decision.level === 'HIGH') {
+            const requestId = `ui-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
             try {
-                wsServer.broadcast('ui_generation_started', { status: 'started' });
+                wsServer.broadcast('ui_generation_started', { requestId, status: 'started' });
                 const payload = await codeGenerationAgent.generate({
                     telemetry: {
                         cursorVelocity: event.data.cursorVelocity,
@@ -55,17 +56,23 @@ app.post('/api/telemetry', async (req, res) => {
                         repeatedClicks: event.data.repeatedClicks,
                         fieldErrors: event.data.fieldErrors,
                         activeField: event.data.activeField ?? null,
+                        clickCount: parsed.data.interactionContext?.clickCount ?? 0,
+                        fieldInteractions: parsed.data.interactionContext?.fieldInteractions ?? {},
                     },
                     frictionLevel: decision.level,
-                    context: `High friction detected at field: ${decision.activeField ?? 'unknown'}`,
+                    context: JSON.stringify({
+                        friction: { score: decision.score, level: decision.level, reason: decision.reason },
+                        activeField: decision.activeField,
+                        interaction: parsed.data.interactionContext ?? {},
+                    }),
                     formState: parsed.data.formState ?? {},
                 });
-                wsServer.broadcast('ui_generation_complete', { payload });
+                wsServer.broadcast('ui_generation_complete', { requestId, payload });
                 return res.status(200).json({ success: true, decision, payload });
             }
             catch (error) {
                 const message = error instanceof Error ? error.message : 'Unknown generation error.';
-                wsServer.broadcast('ui_generation_error', { message });
+                wsServer.broadcast('ui_generation_error', { requestId, message });
                 return res.status(500).json({ error: 'Code generation failed.', message });
             }
         }

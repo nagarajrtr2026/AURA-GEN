@@ -158,12 +158,18 @@ export function FinancialForm({
   onFocusField: (field: string) => void
   onBlurField: (field: string, hasError?: boolean) => void
 }) {
-  const [sectionIndex, setSectionIndex] = useState(0)
+  const [sectionIndex, setSectionIndex] = useState(() => Math.max(0, formSections.findIndex((section) => section.section === form.currentSection)))
   const current = formSections[sectionIndex]
   const total = formSections.reduce((sum, section) => sum + section.items.length, 0)
   const filled = formSections.reduce((sum, section) => sum + section.items.filter(([key]) => getValue(form, section.section, key)).length, 0)
 
   const completion = useMemo(() => Math.max(8, (filled / total) * 100), [filled, total])
+
+  const navigateToSection = (index: number) => {
+    const nextIndex = Math.max(0, Math.min(formSections.length - 1, index))
+    setSectionIndex(nextIndex)
+    setForm((currentForm) => ({ ...currentForm, currentSection: formSections[nextIndex].section }))
+  }
 
   return (
     <div className="grid gap-6 lg:grid-cols-[180px_minmax(0,1fr)]">
@@ -174,7 +180,7 @@ export function FinancialForm({
             <button
               key={section.section}
               type="button"
-              onClick={() => setSectionIndex(index)}
+              onClick={() => navigateToSection(index)}
               className={`flex items-center gap-3 rounded-lg px-3 py-3 text-left text-sm transition ${index === sectionIndex ? 'bg-[#e6f2ed] font-semibold text-[#24564d]' : 'text-[#76908a] hover:bg-[#f0f6f3]'}`}
             >
               <span className={`grid size-6 place-items-center rounded-full text-[10px] font-semibold ${index < sectionIndex ? 'bg-[#5aa18d] text-white' : index === sectionIndex ? 'border border-[#74af9f] text-[#4d897b]' : 'bg-[#edf3f0] text-[#8da29d]'}`}>
@@ -239,7 +245,7 @@ export function FinancialForm({
         <div className="mt-8 flex items-center justify-between gap-4 border-t border-[#edf2ef] pt-5">
           <button
             type="button"
-            onClick={() => setSectionIndex((currentIndex) => Math.max(0, currentIndex - 1))}
+            onClick={() => navigateToSection(sectionIndex - 1)}
             className="rounded-lg border border-[#d9e8e3] bg-white px-4 py-2 text-sm font-medium text-[#52766f]"
             disabled={sectionIndex === 0}
           >
@@ -248,7 +254,7 @@ export function FinancialForm({
 
           <button
             type="button"
-            onClick={() => setSectionIndex((currentIndex) => Math.min(formSections.length - 1, currentIndex + 1))}
+            onClick={() => navigateToSection(sectionIndex + 1)}
             className="rounded-lg bg-[#214d46] px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-[#214d46]/15"
           >
             {sectionIndex === formSections.length - 1 ? 'Review' : 'Continue'}
@@ -262,25 +268,28 @@ export function FinancialForm({
 export function WizardStep({
   form,
   setForm,
+  activeField,
   onBack,
 }: {
   form: FinancialFormState
   setForm: React.Dispatch<React.SetStateAction<FinancialFormState>>
+  activeField?: string | null
   onBack: () => void
 }) {
-  const [step, setStep] = useState(0)
-  const wizardSteps = [
-    { key: 'fullName', question: 'What is your full name?', section: 'personal', type: 'text', placeholder: 'Nagaraj M' },
-    { key: 'employmentType', question: 'How do you earn your income?', section: 'employment', type: 'select', placeholder: 'Select employment type' },
-    { key: 'annualIncome', question: 'What is your annual income?', section: 'financial', type: 'number', placeholder: '₹ 500000' },
-    { key: 'monthlyExpenses', question: 'What are your monthly expenses?', section: 'financial', type: 'number', placeholder: '₹ 35000' },
-    { key: 'panNumber', question: 'What is your PAN number?', section: 'tax', type: 'text', placeholder: 'ABCDE1234F' },
-  ] as const
+  const wizardSteps = formSections.map((section) => ({
+    key: section.section,
+    title: section.title,
+    fields: section.items,
+  }))
+  const activeStep = Math.max(0, wizardSteps.findIndex((section) => section.fields.some(([key]) => key === (activeField ?? null))))
+  const [step, setStep] = useState(activeStep)
 
   const current = wizardSteps[step]
-  const value = getValue(form, current.section, current.key)
-
-  const changeValue = (nextValue: string) => updateValue(form, setForm, current.section, current.key, nextValue)
+  const navigateToStep = (index: number) => {
+    const nextIndex = Math.max(0, Math.min(wizardSteps.length - 1, index))
+    setStep(nextIndex)
+    setForm((currentForm) => ({ ...currentForm, currentSection: wizardSteps[nextIndex].key }))
+  }
 
   return (
     <div className="mx-auto max-w-2xl rounded-2xl border border-[#cfe4dc] bg-white p-6 shadow-[0_18px_70px_rgba(37,94,78,.1)] sm:p-10">
@@ -306,36 +315,21 @@ export function WizardStep({
           className="py-16"
         >
           <p className="text-xs font-semibold uppercase tracking-[.16em] text-[#72a194]">A simpler way forward</p>
-          <h2 className="mt-4 max-w-lg text-3xl font-semibold leading-tight tracking-tight text-[#214e46] sm:text-4xl">{current.question}</h2>
+          <h2 className="mt-4 max-w-lg text-3xl font-semibold leading-tight tracking-tight text-[#214e46] sm:text-4xl">{current.title}</h2>
           <p className="mt-3 text-sm text-[#8ba19b]">Your information stays safe while AuraGen adapts the experience.</p>
 
-          <div className="mt-9">
-            {current.type === 'select' ? (
-              <select
-                autoFocus
-                aria-label={current.question}
-                value={value}
-                onChange={(event) => changeValue(event.target.value)}
-                className="w-full rounded-xl border border-[#b9d8cd] bg-[#f8fcfa] px-4 py-4 text-base text-[#31564d] outline-none focus:ring-4 focus:ring-[#d9eee7]"
-              >
-                <option value="">{current.placeholder}</option>
-                {['Salaried', 'Self-Employed', 'Freelance', 'Business'].map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                autoFocus
-                aria-label={current.question}
-                value={value}
-                onChange={(event) => changeValue(event.target.value)}
-                placeholder={current.placeholder}
-                type={current.type}
-                className="w-full rounded-xl border border-[#b9d8cd] bg-[#f8fcfa] px-4 py-4 text-base text-[#31564d] outline-none focus:ring-4 focus:ring-[#d9eee7]"
-              />
-            )}
+          <div className="mt-9 grid gap-5 md:grid-cols-2">
+            {current.fields.map(([key, label, type, placeholder]) => (
+              <div key={key} className={type === 'textarea' ? 'md:col-span-2' : ''}>
+                <FieldControl
+                  item={[key, label, type, placeholder]}
+                  value={getValue(form, current.key, key)}
+                  onChange={(nextValue) => updateValue(form, setForm, current.key, key, nextValue)}
+                  onFocus={() => undefined}
+                  onBlur={() => undefined}
+                />
+              </div>
+            ))}
           </div>
         </motion.div>
       </AnimatePresence>
@@ -346,10 +340,10 @@ export function WizardStep({
         </button>
 
         <div className="flex items-center gap-3">
-          <button type="button" onClick={() => setStep((value) => Math.max(0, value - 1))} disabled={step === 0} className="rounded-lg border border-[#d9e8e3] bg-white px-4 py-2 text-sm font-medium text-[#52766f] disabled:cursor-not-allowed disabled:opacity-50">
+          <button type="button" onClick={() => navigateToStep(step - 1)} disabled={step === 0} className="rounded-lg border border-[#d9e8e3] bg-white px-4 py-2 text-sm font-medium text-[#52766f] disabled:cursor-not-allowed disabled:opacity-50">
             Previous
           </button>
-          <button type="button" onClick={() => setStep((value) => Math.min(wizardSteps.length - 1, value + 1))} className="rounded-lg bg-[#214d46] px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-[#214d46]/15">
+          <button type="button" onClick={() => navigateToStep(step + 1)} className="rounded-lg bg-[#214d46] px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-[#214d46]/15">
             {step === wizardSteps.length - 1 ? 'Finish' : 'Next'}
           </button>
         </div>

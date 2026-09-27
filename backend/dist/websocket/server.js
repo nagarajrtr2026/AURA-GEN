@@ -14,6 +14,7 @@ export class AuraWebSocketServer {
                         type: event.type ?? 'telemetry_update',
                         timestamp: Date.now(),
                         data: event.data,
+                        ...(typeof event.requestId === 'string' ? { requestId: event.requestId } : {}),
                     };
                     this.server.clients.forEach((client) => {
                         if (client.readyState === 1) {
@@ -32,6 +33,7 @@ export class AuraWebSocketServer {
             type,
             timestamp: Date.now(),
             data,
+            ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
         };
         this.server.clients.forEach((client) => {
             if (client.readyState === 1) {
