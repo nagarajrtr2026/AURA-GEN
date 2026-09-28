@@ -56,7 +56,7 @@ export function useWebSocket() {
         data: { status: 'connected' },
       }
       setLastEvent(connectionEvent)
-      setEvents((current) => [...current.slice(-19), connectionEvent])
+      setEvents((current) => [...current.slice(-199), connectionEvent])
     }
 
     socket.onclose = () => setConnected(false)
@@ -67,7 +67,7 @@ export function useWebSocket() {
         if (typeof event.type !== 'string') return
         if (event.type === 'connection_established') setConnected(true)
         setLastEvent(event)
-        setEvents((current) => [...current.slice(-19), event])
+        setEvents((current) => [...current.slice(-199), event])
       } catch {
         const invalidEvent: WebSocketEvent = {
           type: 'validation_error',
@@ -89,7 +89,7 @@ export function useWebSocket() {
       socketRef.current.send(JSON.stringify(event))
     }
     setLastEvent(event)
-    setEvents((current) => [...current.slice(-9), event])
+    setEvents((current) => [...current.slice(-99), event])
   }, [mode])
 
   const emitMock = useCallback((type: WebSocketEventType) => {
@@ -107,11 +107,13 @@ export function useWebSocket() {
       currentSection: string
       isSubmitted: boolean
     },
+    requestId?: string,
   ) => {
     const response = await fetch(`${apiUrl}/api/telemetry`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        ...(requestId ? { requestId } : {}),
         cursorVelocity: telemetry.cursorVelocity,
         hesitation: telemetry.hesitationTime,
         repeatedClicks: telemetry.repeatedClickCount,

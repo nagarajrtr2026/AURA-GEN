@@ -53,11 +53,15 @@ app.post('/api/telemetry', async (req, res) => {
     })
 
     if (decision.level === 'HIGH') {
-      const requestId = `ui-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+      const requestId = parsed.data.requestId ?? `ui-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 
       try {
-        wsServer.broadcast('ui_generation_started', { requestId, status: 'started' })
-        const payload = await codeGenerationAgent.generate({
+        const generationStart = performance.now()
+        let firstTokenMs: number | null = null
+        let tokenCount = 0
+        let cacheStatus: 'miss' | 'cache' | 'inflight' = 'miss'
+        wsServer.broadcast('ui_generation_started', { requestId, status: 'started', startedAt: Date.now() })
+        const generationRequest = {
           telemetry: {
             cursorVelocity: event.data.cursorVelocity,
             hesitation: event.data.hesitation,
@@ -74,10 +78,48 @@ app.post('/api/telemetry', async (req, res) => {
             interaction: parsed.data.interactionContext ?? {},
           }),
           formState: parsed.data.formState ?? {},
+        }
+        const payload = await codeGenerationAgent.generate(generationRequest, {
+          onToken: (token) => {
+            tokenCount += 1
+            if (firstTokenMs === null) firstTokenMs = Number((performance.now() - generationStart).toFixed(1))
+            wsServer.broadcast('ui_generation_stream', {
+              requestId,
+              stage: tokenCount === 1 ? 'first_token' : 'streaming',
+              token,
+              tokenCount,
+              firstTokenMs,
+            })
+          },
+          onCacheHit: (kind) => {
+            cacheStatus = kind
+          },
         })
 
-        wsServer.broadcast('ui_generation_complete', { requestId, payload })
-        return res.status(200).json({ success: true, decision, payload })
+        const validationCompleteMs = Number((performance.now() - generationStart).toFixed(1))
+        const metrics = {
+          generation_start: 0 as const,
+          first_token: firstTokenMs,
+          validation_complete: validationCompleteMs,
+          cache_status: cacheStatus,
+        }
+        if (cacheStatus !== 'miss') {
+          wsServer.broadcast('ui_generation_stream', {
+            requestId,
+            stage: 'cache_hit',
+            tokenCount,
+            cacheStatus,
+          })
+        }
+        wsServer.broadcast('ui_generation_stream', {
+          requestId,
+          stage: 'validation_complete',
+          tokenCount,
+          metrics,
+        })
+
+        wsServer.broadcast('ui_generation_complete', { requestId, payload, metrics })
+        return res.status(200).json({ success: true, decision, payload, metrics, requestId })
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown generation error.'
         wsServer.broadcast('ui_generation_error', { requestId, message })
