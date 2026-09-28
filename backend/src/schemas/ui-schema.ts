@@ -32,6 +32,7 @@ export const generatedUIPayloadSchema = z.object({
 })
 
 export const telemetryInputSchema = z.object({
+  requestId: z.string().min(1).optional(),
   cursorVelocity: z.number().min(0),
   hesitation: z.number().min(0),
   repeatedClicks: z.number().min(0),

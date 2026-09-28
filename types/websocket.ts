@@ -18,6 +18,23 @@ export interface WebSocketEvent {
   requestId?: string
 }
 
+export type UIGenerationStage = 'generation_start' | 'first_token' | 'streaming' | 'cache_hit' | 'validation_complete'
+
+export interface UIGenerationMetrics {
+  generation_start: 0
+  first_token: number | null
+  validation_complete: number
+  cache_status: 'miss' | 'cache' | 'inflight'
+}
+
+export interface UIGenerationProgress {
+  stage: UIGenerationStage
+  tokenCount: number
+  firstTokenMs?: number | null
+  cacheStatus?: 'cache' | 'inflight'
+  metrics?: UIGenerationMetrics
+}
+
 export interface CognitiveLoadUpdateEvent extends WebSocketEvent {
   type: 'cognitive_load_update'
   data: {

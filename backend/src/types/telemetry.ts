@@ -66,6 +66,13 @@ export interface GeneratedUIPayload {
   timestamp: number
 }
 
+export interface GenerationLatencyMetrics {
+  generation_start: 0
+  first_token: number | null
+  validation_complete: number
+  cache_status: 'miss' | 'cache' | 'inflight'
+}
+
 export interface WebSocketPayload {
   type: string
   timestamp: number

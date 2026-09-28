@@ -104,6 +104,55 @@ test('approved LangChain output continues as structured UI', async () => {
   assert.match(generatedPrompt, /Repeated corrections/)
 })
 
+test('similar concurrent generation requests share one streamed LLM call and keep each form state', async () => {
+  let calls = 0
+  const streamedTokens: string[] = []
+  const response = JSON.stringify({
+    reactCode: 'export default function View() { return <section><h2>Ready</h2></section> }',
+    payload: {
+      id: 'cached-ui',
+      version: '1.0.0',
+      type: 'step_wizard',
+      component: 'StepWizard',
+      props: { steps: [] },
+      fields: [],
+      state: {},
+      timestamp: Date.now(),
+    },
+  })
+  const provider = {
+    generate: async (_prompt: string, onToken?: (token: string) => void) => {
+      calls += 1
+      onToken?.('{"payload":')
+      await Promise.resolve()
+      onToken?.('...}')
+      return response
+    },
+  }
+  const agent = new CodeGenerationAgent(false, provider)
+  const baseRequest = {
+    telemetry: { cursorVelocity: 20, hesitation: 800, repeatedClicks: 5, fieldErrors: 1, activeField: 'annualIncome' },
+    frictionLevel: 'HIGH' as const,
+    context: JSON.stringify({ interaction: { currentSection: 'financial' } }),
+    formState: { currentSection: 'financial', financial: { annualIncome: '91000' } },
+  }
+  const cacheHitKinds: string[] = []
+  const [first, concurrent] = await Promise.all([
+    agent.generate(baseRequest, { onToken: (token) => streamedTokens.push(token) }),
+    agent.generate({ ...baseRequest, formState: { currentSection: 'financial', financial: { annualIncome: '120000' } } }, {
+      onCacheHit: (kind) => cacheHitKinds.push(kind),
+    }),
+  ])
+  const cached = await agent.generate({ ...baseRequest, formState: { currentSection: 'financial', financial: { annualIncome: '150000' } } })
+
+  assert.equal(calls, 1)
+  assert.deepEqual(streamedTokens, ['{"payload":', '...}'])
+  assert.deepEqual(cacheHitKinds, ['inflight'])
+  assert.deepEqual(first.state, baseRequest.formState)
+  assert.deepEqual(concurrent.state, { currentSection: 'financial', financial: { annualIncome: '120000' } })
+  assert.deepEqual(cached.state, { currentSection: 'financial', financial: { annualIncome: '150000' } })
+})
+
 test('malicious LangChain output is rejected before UI is returned', async () => {
   const provider = {
     generate: async () => JSON.stringify({

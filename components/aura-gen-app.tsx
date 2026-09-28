@@ -3,9 +3,10 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { Activity, ArrowRight, BadgeCheck, BarChart3, Bot, Check, Code2, FileText, Gauge, LockKeyhole, RotateCcw, Send, ShieldCheck, Sparkles, Timer, X } from 'lucide-react'
 import Link from 'next/link'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react'
 import { DynamicRenderer } from '@/components/adaptive-ui/DynamicRenderer'
-import { FinancialForm, WizardStep } from '@/components/financial-form/FinancialForm'
+import { GenerationState } from '@/components/adaptive-ui/GenerationState'
+import { FinancialForm, formSections, getValue, updateValue } from '@/components/financial-form/FinancialForm'
 import { Header } from '@/components/layout/Header'
 import { CognitiveLoadCard } from '@/components/cognitive-load/CognitiveLoadCard'
 import { TelemetryMonitor } from '@/components/telemetry/TelemetryMonitor'
@@ -14,6 +15,23 @@ import { useTelemetry } from '@/hooks/useTelemetry'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { validateGeneratedUIPayload, type GeneratedUIPayload } from '@/types/generated-ui'
 import type { FinancialFormState } from '@/types/financial-form'
+import type { UIGenerationMetrics, UIGenerationProgress, WebSocketEvent } from '@/types/websocket'
+
+interface GenerationMeasurements {
+  generation_start: number | null
+  first_token: number | null
+  validation_complete: number | null
+  render_complete: number | null
+  cache_status: UIGenerationMetrics['cache_status'] | null
+}
+
+const emptyGenerationMeasurements: GenerationMeasurements = {
+  generation_start: null,
+  first_token: null,
+  validation_complete: null,
+  render_complete: null,
+  cache_status: null,
+}
 
 const blank: FinancialFormState = {
   personal: {},
@@ -77,6 +95,25 @@ function getAdaptiveStatusText(phase: AdaptivePhase) {
   }
 }
 
+class AdaptiveTransitionBoundary extends Component<{
+  children: ReactNode
+  onError: (error: Error) => void
+}, { hasError: boolean }> {
+  state = { hasError: false }
+
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+
+  componentDidCatch(error: Error, _info: ErrorInfo) {
+    this.props.onError(error)
+  }
+
+  render() {
+    return this.state.hasError ? null : this.props.children
+  }
+}
+
 function FinancialExperience() {
   const [form, setForm] = useState<FinancialFormState>(blank)
   const telemetryApi = useTelemetry()
@@ -86,11 +123,17 @@ function FinancialExperience() {
   const [mode, setMode] = useState<'original' | 'adaptive' | 'fallback'>('original')
   const [generatedUI, setGeneratedUI] = useState<GeneratedUIPayload | null>(null)
   const [generationStatus, setGenerationStatus] = useState<'IDLE' | 'GENERATING' | 'COMPLETE' | 'ERROR'>('IDLE')
+  const [generationProgress, setGenerationProgress] = useState<UIGenerationProgress | null>(null)
+  const [generationMeasurements, setGenerationMeasurements] = useState<GenerationMeasurements>(emptyGenerationMeasurements)
   const [monitorExpanded, setMonitorExpanded] = useState(true)
   const [fallbackMessage, setFallbackMessage] = useState('Unable to adapt the interface right now. Your current form data is safe.')
   const [lastError, setLastError] = useState<string | null>(null)
   const generationAttemptedForHigh = useRef(false)
   const lastActiveField = useRef<string | null>(null)
+  const generationStartedAt = useRef<number | null>(null)
+  const renderedPayloadId = useRef<string | null>(null)
+  const processedEvent = useRef<WebSocketEvent | null>(null)
+  const activeGenerationRequestId = useRef<string | null>(null)
 
   useEffect(() => {
     if (cognitive.level !== 'HIGH') {
@@ -100,6 +143,11 @@ function FinancialExperience() {
     if (generationAttemptedForHigh.current || (phase !== 'MONITORING' && phase !== 'FRICTION_DETECTED')) return
 
     generationAttemptedForHigh.current = true
+    generationStartedAt.current = performance.now()
+    renderedPayloadId.current = null
+    activeGenerationRequestId.current = globalThis.crypto?.randomUUID?.() ?? `ui-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+    setGenerationProgress({ stage: 'generation_start', tokenCount: 0 })
+    setGenerationMeasurements({ ...emptyGenerationMeasurements, generation_start: 0 })
     setMode('adaptive')
     setPhase('GENERATION_STARTED')
     setGenerationStatus('GENERATING')
@@ -112,7 +160,7 @@ function FinancialExperience() {
       fieldInteractions: telemetryApi.telemetry.fieldInteractions,
       currentSection: form.currentSection,
       isSubmitted: form.isSubmitted,
-    })
+    }, activeGenerationRequestId.current)
       .then((payload) => {
         if (payload) {
           const result = validateGeneratedUIPayload(payload)
@@ -132,31 +180,76 @@ function FinancialExperience() {
   }, [cognitive.level, form, phase, socket.connected, socket.sendTelemetry, telemetryApi.telemetry])
 
   useEffect(() => {
-    const event = socket.lastEvent
-    if (!event) return
+    const lastProcessedIndex = processedEvent.current ? socket.events.lastIndexOf(processedEvent.current) : -1
+    if (processedEvent.current && lastProcessedIndex === -1) processedEvent.current = null
+    const pendingEvents = socket.events.slice(lastProcessedIndex + 1)
 
-    if (event.type === 'ui_generation_started') {
-      setGenerationStatus('GENERATING')
-      setPhase('GENERATION_STARTED')
-    } else if (event.type === 'ui_generation_complete') {
-      const result = validateGeneratedUIPayload(event.data?.payload)
-      if (!result.valid || !result.payload) {
-        setLastError(result.error ?? 'The generated UI payload is invalid.')
+    for (const event of pendingEvents) {
+      processedEvent.current = event
+      if (
+        (event.type === 'ui_generation_started' || event.type === 'ui_generation_stream' || event.type === 'ui_generation_complete' || event.type === 'ui_generation_error') &&
+        event.requestId !== activeGenerationRequestId.current
+      ) continue
+      if (event.type === 'ui_generation_started') {
+        if (generationStartedAt.current === null) generationStartedAt.current = performance.now()
+        setGenerationProgress((current) => current ?? { stage: 'generation_start', tokenCount: 0 })
+        setGenerationMeasurements((current) => ({ ...current, generation_start: 0 }))
+        setGenerationStatus('GENERATING')
+        setPhase('GENERATION_STARTED')
+      } else if (event.type === 'ui_generation_stream') {
+        const stage = event.data?.stage
+        if (stage !== 'first_token' && stage !== 'streaming' && stage !== 'cache_hit' && stage !== 'validation_complete') continue
+        const tokenCount = typeof event.data?.tokenCount === 'number' ? event.data.tokenCount : 0
+        const metrics = event.data?.metrics as UIGenerationMetrics | undefined
+        const rawCacheStatus = event.data?.cacheStatus ?? metrics?.cache_status
+        const cacheStatus = rawCacheStatus === 'cache' || rawCacheStatus === 'inflight' ? rawCacheStatus : undefined
+        setGenerationProgress({
+          stage,
+          tokenCount,
+          firstTokenMs: typeof event.data?.firstTokenMs === 'number' ? event.data.firstTokenMs : null,
+          cacheStatus,
+          metrics,
+        })
+        if (stage === 'first_token') {
+          const elapsed = typeof event.data?.firstTokenMs === 'number'
+            ? event.data.firstTokenMs
+            : generationStartedAt.current === null ? null : performance.now() - generationStartedAt.current
+          setGenerationMeasurements((current) => ({ ...current, first_token: elapsed }))
+        } else if (stage === 'cache_hit') {
+          setGenerationMeasurements((current) => ({ ...current, cache_status: cacheStatus === 'inflight' ? 'inflight' : 'cache' }))
+        } else if (stage === 'validation_complete' && metrics) {
+          setGenerationMeasurements((current) => ({ ...current, ...metrics }))
+        }
+      } else if (event.type === 'ui_generation_complete') {
+        const result = validateGeneratedUIPayload(event.data?.payload)
+        if (!result.valid || !result.payload) {
+          setLastError(result.error ?? 'The generated UI payload is invalid.')
+          setGenerationStatus('ERROR')
+          setPhase('FALLBACK')
+          continue
+        }
+        const metrics = event.data?.metrics as UIGenerationMetrics | undefined
+        if (metrics) setGenerationMeasurements((current) => ({ ...current, ...metrics }))
+        setGeneratedUI(result.payload)
+        setGenerationStatus('COMPLETE')
+        setPhase('GENERATION_COMPLETE')
+      } else if (event.type === 'ui_generation_error') {
+        const message = String(event.data?.message ?? 'Backend generation failed.')
+        setLastError(message)
+        setFallbackMessage(message)
         setGenerationStatus('ERROR')
         setPhase('FALLBACK')
-        return
       }
-      setGeneratedUI(result.payload)
-      setGenerationStatus('COMPLETE')
-      setPhase('GENERATION_COMPLETE')
-    } else if (event.type === 'ui_generation_error') {
-      const message = String(event.data?.message ?? 'Backend generation failed.')
-      setLastError(message)
-      setFallbackMessage(message)
-      setGenerationStatus('ERROR')
-      setPhase('FALLBACK')
     }
-  }, [socket.lastEvent])
+  }, [socket.events])
+
+  const handleRenderComplete = useCallback((payloadId: string) => {
+    if (renderedPayloadId.current === payloadId) return
+    renderedPayloadId.current = payloadId
+    if (generationStartedAt.current === null) return
+    const renderComplete = Number((performance.now() - generationStartedAt.current).toFixed(1))
+    setGenerationMeasurements((current) => ({ ...current, render_complete: renderComplete }))
+  }, [])
 
   useEffect(() => {
     if (phase !== 'GENERATION_COMPLETE') return
@@ -203,10 +296,34 @@ function FinancialExperience() {
     setFallbackMessage('Unable to adapt the interface right now. Your current form data is safe.')
   }
 
+  const handleTransitionError = (error: Error) => {
+    const message = error.message || 'The adaptive interface could not be displayed.'
+    setLastError(message)
+    setFallbackMessage(message)
+    setGenerationStatus('ERROR')
+    setPhase('FALLBACK')
+    setMode('fallback')
+  }
+
+  const handleReturnToForm = () => {
+    setPhase('MONITORING')
+    setMode('original')
+    setGenerationStatus('IDLE')
+  }
+
   const handleSimulate = () => {
     generationAttemptedForHigh.current = false
     telemetryApi.simulateFrustration()
     setPhase('FRICTION_DETECTED')
+  }
+
+  const generatedValues = Object.fromEntries(
+    formSections.flatMap(({ section, items }) => items.map(([key]) => [key, getValue(form, section, key)])),
+  )
+
+  const handleGeneratedFieldChange = (name: string, value: string) => {
+    const section = formSections.find(({ items }) => items.some(([key]) => key === name))
+    if (section) updateValue(form, setForm, section.section, name, value)
   }
 
   const resetDemo = () => {
@@ -217,6 +334,10 @@ function FinancialExperience() {
     setMode('original')
     setGeneratedUI(null)
     setGenerationStatus('IDLE')
+    setGenerationProgress(null)
+    setGenerationMeasurements(emptyGenerationMeasurements)
+    generationStartedAt.current = null
+    renderedPayloadId.current = null
     setFallbackMessage('Unable to adapt the interface right now. Your current form data is safe.')
     setLastError(null)
     socket.reset()
@@ -274,34 +395,80 @@ function FinancialExperience() {
 
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_320px]">
           <div className="space-y-6">
-            {phase === 'ADAPTIVE_UI_ACTIVE' || phase === 'MORPHING' || phase === 'GENERATION_COMPLETE' ? (
-              <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} className="space-y-5">
-                <div className="rounded-2xl border border-[#dfeae7] bg-white p-4 shadow-[0_18px_50px_rgba(35,92,76,.08)]">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-[.14em] text-[#6d9a8c]">Adaptive UI</p>
-                      <h2 className="mt-2 text-2xl font-semibold text-[#204c45]">Simplified application flow</h2>
-                    </div>
-                    <button type="button" onClick={() => setPhase('MONITORING')} className="rounded-lg border border-[#d8e8e2] bg-white px-3 py-2 text-xs font-semibold text-[#50776d]">
-                      Back to form
-                    </button>
-                  </div>
-                </div>
-                <DynamicRenderer payload={generatedUI} fallbackMessage={fallbackMessage} />
-                {phase === 'ADAPTIVE_UI_ACTIVE' && <WizardStep form={form} setForm={setForm} activeField={lastActiveField.current} onBack={() => setPhase('MONITORING')} />}
-              </motion.div>
-            ) : (
-              <FinancialForm
-                form={form}
-                setForm={setForm}
-                onAdaptive={handleAdaptiveStart}
-                onFocusField={(field) => {
-                  lastActiveField.current = field
-                  telemetryApi.focusField(field)
-                }}
-                onBlurField={(field, hasError = false) => telemetryApi.blurField(field, hasError)}
-              />
-            )}
+            <motion.div layout transition={{ layout: { duration: 0.42, ease: 'easeInOut' } }}>
+              <AnimatePresence mode="popLayout" initial={false}>
+                {phase === 'ADAPTIVE_UI_ACTIVE' || phase === 'MORPHING' ? (
+                  <motion.div
+                    key="adaptive"
+                    layout
+                    initial={{ opacity: 0, y: 14, scale: 0.985 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -10, scale: 0.99 }}
+                    transition={{ duration: 0.38, ease: 'easeOut', layout: { duration: 0.42, ease: 'easeInOut' } }}
+                    onAnimationComplete={() => {
+                      setPhase((currentPhase) => currentPhase === 'MORPHING' ? 'ADAPTIVE_UI_ACTIVE' : currentPhase)
+                    }}
+                    className="space-y-5"
+                  >
+                    <AdaptiveTransitionBoundary key={generatedUI?.id ?? 'adaptive'} onError={handleTransitionError}>
+                      <div className="rounded-2xl border border-[#dfeae7] bg-white p-4 shadow-[0_18px_50px_rgba(35,92,76,.08)]">
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-[.14em] text-[#6d9a8c]">Adaptive UI</p>
+                            <h2 className="mt-2 text-2xl font-semibold text-[#204c45]">Simplified application flow</h2>
+                          </div>
+                          <button type="button" onClick={handleReturnToForm} className="rounded-lg border border-[#d8e8e2] bg-white px-3 py-2 text-xs font-semibold text-[#50776d]">
+                            Back to form
+                          </button>
+                        </div>
+                      </div>
+                      <DynamicRenderer
+                        payload={generatedUI}
+                        fallbackMessage={fallbackMessage}
+                        values={generatedValues}
+                        onFieldChange={handleGeneratedFieldChange}
+                        generationProgress={generationProgress}
+                        onRenderComplete={handleRenderComplete}
+                      />
+                    </AdaptiveTransitionBoundary>
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="original"
+                    layout
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.28, ease: 'easeOut', layout: { duration: 0.42, ease: 'easeInOut' } }}
+                    className="space-y-5"
+                  >
+                    {generationStatus !== 'IDLE' && (
+                      <GenerationState
+                        status={generationStatus === 'GENERATING' ? 'started' : generationStatus === 'COMPLETE' ? 'complete' : 'error'}
+                        message={generationStatus === 'GENERATING'
+                          ? 'Preparing a validated, simplified workflow. Your entries remain in place.'
+                          : generationStatus === 'COMPLETE'
+                            ? 'Validated adaptive workflow ready. Transitioning without resetting your form.'
+                            : fallbackMessage}
+                      />
+                    )}
+                    {generationStatus === 'GENERATING' && (
+                      <DynamicRenderer payload={null} generationProgress={generationProgress} />
+                    )}
+                    <FinancialForm
+                      form={form}
+                      setForm={setForm}
+                      onAdaptive={handleAdaptiveStart}
+                      onFocusField={(field) => {
+                        lastActiveField.current = field
+                        telemetryApi.focusField(field)
+                      }}
+                      onBlurField={(field, hasError = false) => telemetryApi.blurField(field, hasError)}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
 
             {phase === 'FALLBACK' && (
               <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-[#f1d6d6] bg-[#fff7f7] p-5 shadow-[0_16px_40px_rgba(112,69,69,.06)]">
@@ -336,6 +503,11 @@ function FinancialExperience() {
                 <SummaryRow label="WebSocket" value={socket.connected ? 'connected' : 'standby'} />
                 <SummaryRow label="Mode" value={socket.mode} />
                 <SummaryRow label="Last event" value={socket.lastEvent?.type ?? 'none'} />
+                    <SummaryRow label="generation_start" value={generationMeasurements.generation_start === null ? 'pending' : '0 ms'} />
+                    <SummaryRow label="first_token" value={generationMeasurements.first_token !== null ? `${Math.round(generationMeasurements.first_token)} ms` : generationMeasurements.cache_status ? 'N/A (cached)' : 'pending'} />
+                    <SummaryRow label="validation_complete" value={generationMeasurements.validation_complete === null ? 'pending' : `${Math.round(generationMeasurements.validation_complete)} ms`} />
+                    <SummaryRow label="render_complete" value={generationMeasurements.render_complete === null ? 'pending' : `${Math.round(generationMeasurements.render_complete)} ms`} />
+                    <SummaryRow label="cache_status" value={generationMeasurements.cache_status ?? 'miss'} />
               </div>
             </div>
             <div className="rounded-2xl border border-[#dce9e5] bg-white p-5 shadow-[0_12px_30px_rgba(28,57,52,.04)]">

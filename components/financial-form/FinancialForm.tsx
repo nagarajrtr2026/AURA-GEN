@@ -158,7 +158,7 @@ export function FinancialForm({
   onFocusField: (field: string) => void
   onBlurField: (field: string, hasError?: boolean) => void
 }) {
-  const [sectionIndex, setSectionIndex] = useState(() => Math.max(0, formSections.findIndex((section) => section.section === form.currentSection)))
+  const sectionIndex = Math.max(0, formSections.findIndex((section) => section.section === form.currentSection))
   const current = formSections[sectionIndex]
   const total = formSections.reduce((sum, section) => sum + section.items.length, 0)
   const filled = formSections.reduce((sum, section) => sum + section.items.filter(([key]) => getValue(form, section.section, key)).length, 0)
@@ -167,7 +167,6 @@ export function FinancialForm({
 
   const navigateToSection = (index: number) => {
     const nextIndex = Math.max(0, Math.min(formSections.length - 1, index))
-    setSectionIndex(nextIndex)
     setForm((currentForm) => ({ ...currentForm, currentSection: formSections[nextIndex].section }))
   }
 
