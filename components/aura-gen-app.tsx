@@ -22,6 +22,7 @@ interface GenerationMeasurements {
   first_token: number | null
   validation_complete: number | null
   render_complete: number | null
+  total_redesign_ms: number | null
   cache_status: UIGenerationMetrics['cache_status'] | null
 }
 
@@ -30,6 +31,7 @@ const emptyGenerationMeasurements: GenerationMeasurements = {
   first_token: null,
   validation_complete: null,
   render_complete: null,
+  total_redesign_ms: null,
   cache_status: null,
 }
 
@@ -161,7 +163,17 @@ function FinancialExperience() {
       currentSection: form.currentSection,
       isSubmitted: form.isSubmitted,
     }, activeGenerationRequestId.current)
-      .then((payload) => {
+      .then(({ payload, metrics }) => {
+        if (metrics) {
+          setGenerationMeasurements((current) => ({ ...current, ...metrics }))
+          setGenerationProgress((current) => ({
+            stage: 'validation_complete',
+            tokenCount: current?.tokenCount ?? 0,
+            firstTokenMs: metrics.first_token,
+            cacheStatus: metrics.cache_status === 'miss' ? undefined : metrics.cache_status,
+            metrics,
+          }))
+        }
         if (payload) {
           const result = validateGeneratedUIPayload(payload)
           if (!result.valid || !result.payload) throw new Error(result.error ?? 'The generated UI payload is invalid.')
@@ -248,19 +260,24 @@ function FinancialExperience() {
     renderedPayloadId.current = payloadId
     if (generationStartedAt.current === null) return
     const renderComplete = Number((performance.now() - generationStartedAt.current).toFixed(1))
-    setGenerationMeasurements((current) => ({ ...current, render_complete: renderComplete }))
+    setGenerationMeasurements((current) => ({ ...current, render_complete: renderComplete, total_redesign_ms: renderComplete }))
   }, [])
 
   useEffect(() => {
     if (phase !== 'GENERATION_COMPLETE') return
-    const morphTimer = window.setTimeout(() => setPhase('MORPHING'), 400)
-    return () => window.clearTimeout(morphTimer)
+    setPhase('MORPHING')
   }, [phase])
 
   useEffect(() => {
     if (phase !== 'MORPHING') return
-    const completeTimer = window.setTimeout(() => setPhase('ADAPTIVE_UI_ACTIVE'), 600)
-    return () => window.clearTimeout(completeTimer)
+    const transitionTimer = window.setTimeout(() => setPhase('ADAPTIVE_UI_ACTIVE'), 450)
+    return () => window.clearTimeout(transitionTimer)
+  }, [phase])
+
+  useEffect(() => {
+    if (phase !== 'ADAPTIVE_UI_ACTIVE' || generationStartedAt.current === null) return
+    const totalRedesign = Number((performance.now() - generationStartedAt.current).toFixed(1))
+    setGenerationMeasurements((current) => ({ ...current, total_redesign_ms: totalRedesign }))
   }, [phase])
 
   const handleAdaptiveStart = () => {
@@ -276,7 +293,7 @@ function FinancialExperience() {
     setGenerationStatus('ERROR')
     setPhase('FALLBACK')
     setMode('fallback')
-    socket.emitMock('ui_fallback')
+    socket.send({ type: 'ui_fallback', timestamp: Date.now(), data: { message } })
   }
 
   const handleContinueOriginal = () => {
@@ -286,7 +303,7 @@ function FinancialExperience() {
     setGeneratedUI(null)
     setLastError(null)
     setFallbackMessage('Unable to adapt the interface right now. Your current form data is safe.')
-    socket.emitMock('ui_fallback')
+    socket.send({ type: 'ui_fallback', timestamp: Date.now(), data: { status: 'continue_original' } })
   }
 
   const handleTryAgain = () => {
@@ -501,12 +518,13 @@ function FinancialExperience() {
               <div className="mt-4 space-y-3">
                 <SummaryRow label="Status" value={generationStatus} />
                 <SummaryRow label="WebSocket" value={socket.connected ? 'connected' : 'standby'} />
-                <SummaryRow label="Mode" value={socket.mode} />
+                <SummaryRow label="Connection" value={socket.connected ? 'real WebSocket' : 'reconnecting'} />
                 <SummaryRow label="Last event" value={socket.lastEvent?.type ?? 'none'} />
                     <SummaryRow label="generation_start" value={generationMeasurements.generation_start === null ? 'pending' : '0 ms'} />
                     <SummaryRow label="first_token" value={generationMeasurements.first_token !== null ? `${Math.round(generationMeasurements.first_token)} ms` : generationMeasurements.cache_status ? 'N/A (cached)' : 'pending'} />
                     <SummaryRow label="validation_complete" value={generationMeasurements.validation_complete === null ? 'pending' : `${Math.round(generationMeasurements.validation_complete)} ms`} />
                     <SummaryRow label="render_complete" value={generationMeasurements.render_complete === null ? 'pending' : `${Math.round(generationMeasurements.render_complete)} ms`} />
+                    <SummaryRow label="total redesign latency" value={generationMeasurements.total_redesign_ms === null ? 'pending' : `${Math.round(generationMeasurements.total_redesign_ms)} ms`} />
                     <SummaryRow label="cache_status" value={generationMeasurements.cache_status ?? 'miss'} />
               </div>
             </div>
@@ -664,14 +682,11 @@ export function DeveloperPage() {
   const cognitive = useCognitiveLoad(telemetryApi.telemetry)
   const socket = useWebSocket()
 
-  const events = useMemo(
-    () => [
-      { type: 'telemetry_update', time: 'now', desc: 'Interaction signals captured' },
-      { type: 'cognitive_load_update', time: '12s ago', desc: `Score recalculated · ${cognitive.score}/100` },
-      { type: socket.lastEvent?.type ?? 'idle', time: 'just now', desc: socket.lastEvent?.data ? 'Mock payload received' : 'Awaiting event' },
-    ],
-    [cognitive.score, socket.lastEvent],
-  )
+  const events = useMemo(() => socket.events.slice(-8).reverse().map((event) => ({
+    type: event.type,
+    time: new Date(event.timestamp).toLocaleTimeString(),
+    desc: String(event.data?.stage ?? event.data?.level ?? event.data?.status ?? 'WebSocket event'),
+  })), [socket.events])
 
   return (
     <div className="min-h-screen bg-[#f7faf9]">
@@ -698,9 +713,6 @@ export function DeveloperPage() {
             </p>
             <p className="mt-3 font-mono text-[10px] text-[#8ba39c]">NEXT_PUBLIC_WS_URL = {socket.socketUrl}</p>
             <div className="mt-4 flex gap-2">
-              <button type="button" onClick={() => socket.setMode(socket.mode === 'mock' ? 'real' : 'mock')} className="rounded-lg border border-[#d8e8e2] bg-white px-3 py-2 text-xs font-semibold text-[#50776d]">
-                {socket.mode === 'mock' ? 'Switch to Real' : 'Switch to Mock'}
-              </button>
               <button type="button" onClick={socket.reset} className="rounded-lg border border-[#d8e8e2] bg-white px-3 py-2 text-xs font-semibold text-[#50776d]">
                 Reset session
               </button>
@@ -711,7 +723,7 @@ export function DeveloperPage() {
             <p className="text-xs text-[#86a19a]">Adaptive UI state</p>
             <p className="mt-3 text-lg font-semibold text-[#244e46]">Monitoring</p>
             <div className="mt-4 space-y-3">
-              <SummaryRow label="WS mode" value={socket.mode} />
+              <SummaryRow label="Connection" value={socket.connected ? 'real WebSocket' : 'reconnecting'} />
               <SummaryRow label="Score" value={`${cognitive.score}/100`} />
               <SummaryRow label="Level" value={cognitive.level} />
               <SummaryRow label="Fallback" value={socket.lastEvent?.type === 'ui_fallback' ? 'active' : 'idle'} />
@@ -734,8 +746,8 @@ export function DeveloperPage() {
           <div className="rounded-2xl border border-[#dce9e5] bg-white p-5">
             <p className="text-xs text-[#86a19a]">Event stream</p>
             <div className="mt-4 space-y-3">
-              {events.map((event) => (
-                <div key={`${event.type}-${event.time}`} className="rounded-xl border border-[#edf2ef] bg-[#f7faf9] p-3">
+              {events.map((event, index) => (
+                <div key={`${event.type}-${event.timestamp}-${index}`} className="rounded-xl border border-[#edf2ef] bg-[#f7faf9] p-3">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[10px] font-semibold uppercase tracking-[.12em] text-[#6d9a8c]">{event.type}</span>
                     <span className="text-[10px] text-[#7d948e]">{event.time}</span>

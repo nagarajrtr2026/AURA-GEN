@@ -1,4 +1,5 @@
 import { ChatOpenAI } from '@langchain/openai'
+import { config } from '../config.js'
 
 export class LangChainProviderAdapter {
   async generate(prompt: string, onToken?: (token: string) => void): Promise<string> {
@@ -9,8 +10,9 @@ export class LangChainProviderAdapter {
 
     const model = new ChatOpenAI({
       apiKey,
-      model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
+      model: config.openAiModel,
       temperature: 0.2,
+      configuration: config.openAiBaseUrl ? { baseURL: config.openAiBaseUrl } : undefined,
     })
 
     if (!onToken) {

@@ -1,6 +1,7 @@
 export interface AppConfig {
   port: number
-  mockLlm: boolean
-  openAiApiKey?: string
+  wsPort: number
+  openAiBaseUrl?: string
   openAiModel: string
+  frontendOrigin: string
 }

@@ -10,7 +10,8 @@ Rules:
 - Do NOT generate arbitrary JavaScript or code execution logic.
 - Allowed payload components: TextInput, SelectInput, NumberInput, DateInput, StepWizard, FinancialSummary.
 - Keep the generated interface simple, task-focused, and safe.
-- Preserve every value in formState exactly and use the active field and interaction context as guidance.
+- formState contains field names and value types only; actual user-entered values are never sent to the model.
+- Use the active field, current section, and interaction context as guidance. The server restores the original values after validation.
 - The payload object uses keys: id, version, type, component, props, fields, state, timestamp.
 - Use step_wizard for multi-step guidance and adaptive_form for a focused form.
 - Use only static values and safe UI metadata in the payload.

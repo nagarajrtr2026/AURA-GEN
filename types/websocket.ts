@@ -7,6 +7,7 @@ export type WebSocketEventType =
   | 'ui_generation_stream'
   | 'ui_generation_complete'
   | 'ui_generation_error'
+  | 'generation_subscription_ready'
   | 'ui_fallback'
   | 'ui_morph_start'
   | 'ui_morph_complete'

@@ -1,4 +1,5 @@
 import express from 'express'
+import { performance } from 'node:perf_hooks'
 import { config } from './config.js'
 import { CodeGenerationAgent } from './agents/code-generation-agent.js'
 import { FrictionEngine } from './services/friction-engine.js'
@@ -8,20 +9,31 @@ import { AuraWebSocketServer } from './websocket/server.js'
 const app = express()
 app.use(express.json())
 app.use((_req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*')
+  const origin = _req.header('Origin')
+  if (origin && origin !== config.frontendOrigin) return res.sendStatus(403)
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Vary', 'Origin')
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  if (_req.method === 'OPTIONS') return res.sendStatus(204)
   next()
 })
-app.options('*', (_req, res) => res.sendStatus(204))
 
 const frictionEngine = new FrictionEngine()
-const codeGenerationAgent = new CodeGenerationAgent(config.mockLlm)
-const wsServer = new AuraWebSocketServer(config.wsPort)
-wsServer.start()
+const codeGenerationAgent = new CodeGenerationAgent()
+const wsServer = new AuraWebSocketServer(config.wsPort, config.frontendOrigin)
+void wsServer.start().catch((error: unknown) => console.error('AuraGen WebSocket server failed to start.', error))
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', mockLlm: config.mockLlm, port: config.port })
+  res.json({
+    status: 'ok',
+    llmProvider: 'openai-compatible',
+    llmConfigured: Boolean(process.env.OPENAI_API_KEY),
+    model: config.openAiModel,
+    port: config.port,
+  })
 })
 
 app.post('/api/telemetry', async (req, res) => {
@@ -48,7 +60,6 @@ app.post('/api/telemetry', async (req, res) => {
     wsServer.broadcast('cognitive_load_update', {
       score: decision.score,
       level: decision.level,
-      activeField: decision.activeField,
       reason: decision.reason,
     })
 
@@ -60,7 +71,7 @@ app.post('/api/telemetry', async (req, res) => {
         let firstTokenMs: number | null = null
         let tokenCount = 0
         let cacheStatus: 'miss' | 'cache' | 'inflight' = 'miss'
-        wsServer.broadcast('ui_generation_started', { requestId, status: 'started', startedAt: Date.now() })
+        wsServer.sendToRequest(requestId, 'ui_generation_started', { status: 'started', startedAt: Date.now() })
         const generationRequest = {
           telemetry: {
             cursorVelocity: event.data.cursorVelocity,
@@ -83,7 +94,7 @@ app.post('/api/telemetry', async (req, res) => {
           onToken: (token) => {
             tokenCount += 1
             if (firstTokenMs === null) firstTokenMs = Number((performance.now() - generationStart).toFixed(1))
-            wsServer.broadcast('ui_generation_stream', {
+            wsServer.sendToRequest(requestId, 'ui_generation_stream', {
               requestId,
               stage: tokenCount === 1 ? 'first_token' : 'streaming',
               token,
@@ -104,25 +115,26 @@ app.post('/api/telemetry', async (req, res) => {
           cache_status: cacheStatus,
         }
         if (cacheStatus !== 'miss') {
-          wsServer.broadcast('ui_generation_stream', {
+          wsServer.sendToRequest(requestId, 'ui_generation_stream', {
             requestId,
             stage: 'cache_hit',
             tokenCount,
             cacheStatus,
           })
         }
-        wsServer.broadcast('ui_generation_stream', {
+        wsServer.sendToRequest(requestId, 'ui_generation_stream', {
           requestId,
           stage: 'validation_complete',
           tokenCount,
           metrics,
         })
 
-        wsServer.broadcast('ui_generation_complete', { requestId, payload, metrics })
+        wsServer.sendToRequest(requestId, 'ui_generation_complete', { payload, metrics })
         return res.status(200).json({ success: true, decision, payload, metrics, requestId })
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown generation error.'
-        wsServer.broadcast('ui_generation_error', { requestId, message })
+        console.error(`[AuraGen] Code generation failed for request ${requestId}.`, error)
+        const message = 'Unable to generate an adaptive interface. Your form data is safe; retry or continue with the original form.'
+        wsServer.sendToRequest(requestId, 'ui_generation_error', { message })
         return res.status(500).json({ error: 'Code generation failed.', message })
       }
     }
