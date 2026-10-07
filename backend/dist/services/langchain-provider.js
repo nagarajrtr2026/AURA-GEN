@@ -1,16 +1,35 @@
 import { ChatOpenAI } from '@langchain/openai';
+import { config } from '../config.js';
 export class LangChainProviderAdapter {
-    async generate(prompt) {
-        const apiKey = process.env.OPENAI_API_KEY;
+    async generate(prompt, onToken) {
+        const apiKey = process.env.GROQ_API_KEY?.trim();
         if (!apiKey) {
-            throw new Error('OPENAI_API_KEY is required for the LangChain provider adapter.');
+            throw new Error('GROQ_API_KEY is required for the Groq provider adapter.');
         }
         const model = new ChatOpenAI({
             apiKey,
-            model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
+            model: config.groqModel,
             temperature: 0.2,
+            configuration: { baseURL: config.groqBaseUrl },
         });
-        const response = await model.invoke(prompt);
-        return typeof response === 'string' ? response : String(response.content ?? '');
+        if (!onToken) {
+            const response = await model.invoke(prompt);
+            return typeof response === 'string' ? response : String(response.content ?? '');
+        }
+        let output = '';
+        const stream = await model.stream(prompt);
+        for await (const chunk of stream) {
+            const content = chunk.content;
+            const token = typeof content === 'string'
+                ? content
+                : Array.isArray(content)
+                    ? content.map((part) => typeof part === 'string' ? part : 'text' in part && typeof part.text === 'string' ? part.text : '').join('')
+                    : '';
+            if (!token)
+                continue;
+            output += token;
+            onToken(token);
+        }
+        return output;
     }
 }

@@ -1,4 +1,5 @@
 import express from 'express'
+import { performance } from 'node:perf_hooks'
 import { config } from './config.js'
 import { CodeGenerationAgent } from './agents/code-generation-agent.js'
 import { FrictionEngine } from './services/friction-engine.js'
@@ -8,20 +9,67 @@ import { AuraWebSocketServer } from './websocket/server.js'
 const app = express()
 app.use(express.json())
 app.use((_req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*')
+  const origin = _req.header('Origin')
+  if (origin && origin !== config.frontendOrigin) return res.sendStatus(403)
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Vary', 'Origin')
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  if (_req.method === 'OPTIONS') return res.sendStatus(204)
   next()
 })
-app.options('*', (_req, res) => res.sendStatus(204))
 
 const frictionEngine = new FrictionEngine()
-const codeGenerationAgent = new CodeGenerationAgent(config.mockLlm)
-const wsServer = new AuraWebSocketServer(config.wsPort)
-wsServer.start()
+const codeGenerationAgent = new CodeGenerationAgent()
+const wsServer = new AuraWebSocketServer(config.wsPort, config.frontendOrigin)
+
+function hasGroqApiKey() {
+  const apiKey = process.env.GROQ_API_KEY?.trim()
+  return Boolean(apiKey && !apiKey.startsWith('replace-with-'))
+}
+
+function getGenerationFailure(error: unknown) {
+  const diagnostic = error instanceof Error ? error.message : 'Unknown generation error.'
+  const normalized = diagnostic.toLowerCase()
+
+  if (normalized.includes('no credits remaining') || normalized.includes('insufficient_quota')) {
+    return {
+      message: 'AI generation is unavailable because the Groq account has reached its usage or billing limit. Check Groq console usage and billing, then choose “Try again.” Your form data is safe.',
+      diagnostic,
+    }
+  }
+
+  if (normalized.includes('401') || normalized.includes('invalid_api_key')) {
+    return {
+      message: 'Groq rejected the API key. Update GROQ_API_KEY in backend/.env, restart the backend, then choose “Try again.” Your form data is safe.',
+      diagnostic,
+    }
+  }
+
+  if (normalized.includes('429') || normalized.includes('rate limit')) {
+    return {
+      message: 'Groq is rate-limiting requests. Wait until the Groq usage limit resets, then choose “Try again.” Your form data is safe.',
+      diagnostic,
+    }
+  }
+
+  return {
+    message: 'Unable to generate an adaptive interface. Your form data is safe; check the backend logs, then retry or continue with the original form.',
+    diagnostic,
+  }
+}
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', mockLlm: config.mockLlm, port: config.port })
+  res.json({
+    status: 'ok',
+    llmProvider: 'groq',
+    llmConfigured: hasGroqApiKey(),
+    websocketReady: true,
+    model: config.groqModel,
+    port: config.port,
+  })
 })
 
 app.post('/api/telemetry', async (req, res) => {
@@ -48,7 +96,6 @@ app.post('/api/telemetry', async (req, res) => {
     wsServer.broadcast('cognitive_load_update', {
       score: decision.score,
       level: decision.level,
-      activeField: decision.activeField,
       reason: decision.reason,
     })
 
@@ -56,11 +103,17 @@ app.post('/api/telemetry', async (req, res) => {
       const requestId = parsed.data.requestId ?? `ui-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 
       try {
+        if (!hasGroqApiKey()) {
+          const message = 'Adaptive generation is not configured. Add a valid GROQ_API_KEY to backend/.env, then restart the development server.'
+          wsServer.sendToRequest(requestId, 'ui_generation_error', { message })
+          return res.status(503).json({ error: 'Generation is not configured.', message })
+        }
+
         const generationStart = performance.now()
         let firstTokenMs: number | null = null
         let tokenCount = 0
         let cacheStatus: 'miss' | 'cache' | 'inflight' = 'miss'
-        wsServer.broadcast('ui_generation_started', { requestId, status: 'started', startedAt: Date.now() })
+        wsServer.sendToRequest(requestId, 'ui_generation_started', { status: 'started', startedAt: Date.now() })
         const generationRequest = {
           telemetry: {
             cursorVelocity: event.data.cursorVelocity,
@@ -83,7 +136,7 @@ app.post('/api/telemetry', async (req, res) => {
           onToken: (token) => {
             tokenCount += 1
             if (firstTokenMs === null) firstTokenMs = Number((performance.now() - generationStart).toFixed(1))
-            wsServer.broadcast('ui_generation_stream', {
+            wsServer.sendToRequest(requestId, 'ui_generation_stream', {
               requestId,
               stage: tokenCount === 1 ? 'first_token' : 'streaming',
               token,
@@ -104,26 +157,34 @@ app.post('/api/telemetry', async (req, res) => {
           cache_status: cacheStatus,
         }
         if (cacheStatus !== 'miss') {
-          wsServer.broadcast('ui_generation_stream', {
+          wsServer.sendToRequest(requestId, 'ui_generation_stream', {
             requestId,
             stage: 'cache_hit',
             tokenCount,
             cacheStatus,
           })
         }
-        wsServer.broadcast('ui_generation_stream', {
+        wsServer.sendToRequest(requestId, 'ui_generation_stream', {
           requestId,
           stage: 'validation_complete',
           tokenCount,
           metrics,
         })
 
-        wsServer.broadcast('ui_generation_complete', { requestId, payload, metrics })
+        wsServer.sendToRequest(requestId, 'ui_generation_complete', { payload, metrics })
         return res.status(200).json({ success: true, decision, payload, metrics, requestId })
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown generation error.'
-        wsServer.broadcast('ui_generation_error', { requestId, message })
-        return res.status(500).json({ error: 'Code generation failed.', message })
+        console.error(`[AuraGen] Code generation failed for request ${requestId}.`, error)
+        const failure = getGenerationFailure(error)
+        const errorData = {
+          message: failure.message,
+          ...(process.env.NODE_ENV === 'production' ? {} : { diagnostic: failure.diagnostic }),
+        }
+        wsServer.sendToRequest(requestId, 'ui_generation_error', errorData)
+        return res.status(500).json({
+          error: 'Code generation failed.',
+          ...errorData,
+        })
       }
     }
 
@@ -134,6 +195,20 @@ app.post('/api/telemetry', async (req, res) => {
   }
 })
 
-app.listen(config.port, () => {
-  console.log(`AuraGen backend listening on http://localhost:${config.port}`)
+async function start() {
+  await wsServer.start()
+
+  const httpServer = app.listen(config.port)
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once('listening', resolve)
+    httpServer.once('error', reject)
+  })
+
+  console.log(`AuraGen backend listening on http://localhost:${config.port} (WebSocket :${config.wsPort})`)
+}
+
+void start().catch((error: unknown) => {
+  console.error('AuraGen backend failed to start.', error)
+  wsServer.close()
+  process.exitCode = 1
 })

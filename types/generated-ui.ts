@@ -27,17 +27,6 @@ export interface GeneratedUIPayload {
   timestamp: number
 }
 
-export interface AdaptiveUIState {
-  isTransitioning: boolean
-  isGenerating: boolean
-  hasGenerated: boolean
-  generatedUI: GeneratedUIPayload | null
-  error: string | null
-  fallbackReason: string | null
-}
-
-export type UIRenderMode = 'original' | 'adaptive' | 'fallback'
-
 export const ALLOWED_UI_COMPONENTS = new Set<GeneratedUIPayload['component']>([
   'TextInput',
   'SelectInput',
