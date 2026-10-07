@@ -1,7 +1,7 @@
 export interface AppConfig {
   port: number
   wsPort: number
-  openAiBaseUrl?: string
-  openAiModel: string
+  groqBaseUrl: string
+  groqModel: string
   frontendOrigin: string
 }

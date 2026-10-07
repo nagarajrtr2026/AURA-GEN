@@ -71,6 +71,44 @@ test('approved LangChain output continues as structured UI', async () => {
     assert.match(generatedPrompt, /Repeated corrections/);
     assert.doesNotMatch(generatedPrompt, /91000|Approved Person|approved@example/);
 });
+test('normalizes Groq form payloads into one financial field per wizard step', async () => {
+    const agent = new CodeGenerationAgent({
+        generate: async () => JSON.stringify({
+            reactCode: 'export default function View() { return <section><h2>Ready</h2></section> }',
+            payload: {
+                id: 'groq-ui',
+                version: '1.0.0',
+                type: 'form',
+                component: 'step_wizard',
+                props: {
+                    steps: [{ id: 'financial', title: 'Financial information' }],
+                },
+                fields: [
+                    { name: 'annualIncome', type: 'number', label: 'Annual income' },
+                    { name: 'monthlyExpenses', type: 'number', label: 'Monthly expenses' },
+                ],
+                state: {},
+                timestamp: new Date().toISOString(),
+            },
+        }),
+    });
+    const payload = await agent.generate({
+        telemetry: { cursorVelocity: 0, hesitation: 0, repeatedClicks: 5, fieldErrors: 1, activeField: null },
+        frictionLevel: 'HIGH',
+        context: 'High friction detected.',
+        formState: { currentSection: 'financial', financial: { annualIncome: '91000' } },
+    });
+    assert.deepEqual(payload.fields, ['annualIncome', 'monthlyExpenses']);
+    assert.equal(payload.type, 'step_wizard');
+    assert.equal(payload.component, 'StepWizard');
+    assert.equal(payload.props.steps?.length, 2);
+    assert.deepEqual(payload.props.steps?.map((step) => step.fields.map((field) => field.name)), [
+        ['annualIncome'],
+        ['monthlyExpenses'],
+    ]);
+    assert.equal(typeof payload.timestamp, 'number');
+    assert.deepEqual(payload.state, { currentSection: 'financial', financial: { annualIncome: '91000' } });
+});
 test('similar concurrent generation requests share one streamed LLM call and keep each form state', async () => {
     let calls = 0;
     const streamedTokens = [];

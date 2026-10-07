@@ -684,6 +684,7 @@ export function DeveloperPage() {
 
   const events = useMemo(() => socket.events.slice(-8).reverse().map((event) => ({
     type: event.type,
+    timestamp: event.timestamp,
     time: new Date(event.timestamp).toLocaleTimeString(),
     desc: String(event.data?.stage ?? event.data?.level ?? event.data?.status ?? 'WebSocket event'),
   })), [socket.events])

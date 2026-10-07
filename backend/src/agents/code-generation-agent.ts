@@ -7,7 +7,7 @@ import type { GeneratedUIPayload, LLMRequestPayload } from '../types/telemetry.j
 
 const llmResponseSchema = z.object({
   reactCode: z.string().min(1),
-  payload: generatedUIPayloadSchema,
+  payload: z.record(z.unknown()),
 })
 
 export interface GenerationCallbacks {
@@ -36,6 +36,101 @@ function shapeOf(value: unknown): unknown {
     )
   }
   return typeof value
+}
+
+function normalizeGeneratedPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const props = payload.props && typeof payload.props === 'object' && !Array.isArray(payload.props)
+    ? payload.props as Record<string, unknown>
+    : {}
+  const validComponents = ['TextInput', 'SelectInput', 'NumberInput', 'DateInput', 'StepWizard', 'FinancialSummary']
+  const rawFields = Array.isArray(payload.fields) ? payload.fields : []
+  const rawSteps = Array.isArray(props.steps) ? props.steps : undefined
+  const steps = rawSteps?.map((step, index) => {
+    const normalizedStep = step && typeof step === 'object' && !Array.isArray(step)
+      ? step as Record<string, unknown>
+      : {}
+    return {
+      ...normalizedStep,
+      id: typeof normalizedStep.id === 'string' ? normalizedStep.id : `step-${index + 1}`,
+      title: typeof normalizedStep.title === 'string' ? normalizedStep.title : `Step ${index + 1}`,
+      fields: Array.isArray(normalizedStep.fields) ? normalizedStep.fields : [],
+    }
+  })
+  const stepFields = steps?.flatMap((step) => step.fields) ?? []
+  const propFields = Array.isArray(props.fields) ? props.fields : []
+  const rawFieldObjects = rawFields.filter((field) => field && typeof field === 'object' && !Array.isArray(field))
+  const stepFieldObjects = stepFields.filter((field) => field && typeof field === 'object' && !Array.isArray(field))
+  const candidateFields = propFields.some((field) => field && typeof field === 'object' && !Array.isArray(field))
+    ? propFields
+    : stepFieldObjects.length > 0
+      ? stepFieldObjects
+      : rawFieldObjects.length > 0
+        ? rawFieldObjects
+        : propFields.length > 0 ? propFields : stepFields
+  const uniqueFields = candidateFields
+    .filter((field): field is Record<string, unknown> =>
+      Boolean(field && typeof field === 'object' && !Array.isArray(field) && typeof field.name === 'string'),
+    )
+    .filter((field, index) =>
+      candidateFields.findIndex((candidate) =>
+        candidate && typeof candidate === 'object' && !Array.isArray(candidate) && candidate.name === field.name,
+      ) === index,
+    )
+  const fieldNames = [
+    ...new Set([
+      ...rawFields.flatMap((field) => {
+        if (typeof field === 'string') return [field]
+        if (field && typeof field === 'object' && !Array.isArray(field) && typeof field.name === 'string') return [field.name]
+        return []
+      }),
+      ...uniqueFields.map((field) => field.name as string),
+    ]),
+  ]
+  const validTypes = ['step_wizard', 'simplified_form', 'adaptive_form']
+  const type = typeof payload.type === 'string' && validTypes.includes(payload.type)
+    ? payload.type
+    : payload.type === 'form'
+      ? 'step_wizard'
+      : payload.type === 'ui_payload'
+        ? steps?.length ? 'step_wizard' : 'adaptive_form'
+      : payload.type
+  const wizardSteps = type === 'step_wizard' && uniqueFields.length > 0
+    ? uniqueFields.map((field, index) => ({
+      id: field.name as string || `step-${index + 1}`,
+      title: typeof field.label === 'string' ? field.label : `Financial detail ${index + 1}`,
+      fields: [field],
+    }))
+    : steps
+  const firstField = candidateFields[0] && typeof candidateFields[0] === 'object' && !Array.isArray(candidateFields[0])
+    ? candidateFields[0] as Record<string, unknown>
+    : undefined
+  const fieldComponent = firstField?.type === 'select'
+    ? 'SelectInput'
+    : firstField?.type === 'number'
+      ? 'NumberInput'
+      : firstField?.type === 'date'
+        ? 'DateInput'
+        : 'TextInput'
+  const component = type === 'step_wizard'
+    ? 'StepWizard'
+    : typeof payload.component === 'string' && validComponents.includes(payload.component)
+      ? payload.component
+      : wizardSteps?.length
+        ? 'StepWizard'
+        : fieldComponent
+
+  return {
+    ...payload,
+    component,
+    type,
+    props: {
+      ...props,
+      ...(wizardSteps ? { steps: wizardSteps } : {}),
+    },
+    fields: fieldNames,
+    state: payload.state && typeof payload.state === 'object' && !Array.isArray(payload.state) ? payload.state : {},
+    timestamp: typeof payload.timestamp === 'number' ? payload.timestamp : Date.now(),
+  }
 }
 
 export class CodeGenerationAgent {
@@ -140,11 +235,16 @@ export class CodeGenerationAgent {
         throw new Error(`Generated React code was rejected: ${validation.error}`)
       }
 
-      return generatedUIPayloadSchema.parse({
-        ...safe.data.payload,
+      const validatedPayload = generatedUIPayloadSchema.safeParse({
+        ...normalizeGeneratedPayload(safe.data.payload),
         state: payload.formState,
         timestamp: Date.now(),
       })
+      if (!validatedPayload.success) {
+        throw new Error(`LLM output failed validation: ${validatedPayload.error.message}`)
+      }
+
+      return validatedPayload.data
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown LLM error.'
       throw new Error(`Code generation failed: ${message}`)

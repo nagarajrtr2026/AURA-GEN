@@ -2,15 +2,15 @@ import { ChatOpenAI } from '@langchain/openai';
 import { config } from '../config.js';
 export class LangChainProviderAdapter {
     async generate(prompt, onToken) {
-        const apiKey = process.env.OPENAI_API_KEY;
+        const apiKey = process.env.GROQ_API_KEY?.trim();
         if (!apiKey) {
-            throw new Error('OPENAI_API_KEY is required for the LangChain provider adapter.');
+            throw new Error('GROQ_API_KEY is required for the Groq provider adapter.');
         }
         const model = new ChatOpenAI({
             apiKey,
-            model: config.openAiModel,
+            model: config.groqModel,
             temperature: 0.2,
-            configuration: config.openAiBaseUrl ? { baseURL: config.openAiBaseUrl } : undefined,
+            configuration: { baseURL: config.groqBaseUrl },
         });
         if (!onToken) {
             const response = await model.invoke(prompt);
